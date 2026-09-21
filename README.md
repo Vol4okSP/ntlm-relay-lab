@@ -1,24 +1,64 @@
-# NTLM Relay — промежуточный вариант
+# NTLM Authentication — разбор сообщений
 
 ## Статус
 
-Это промежуточная версия практического задания.
+На данном этапе реализован сервис, который принимает штатную NTLM-аутентификацию от Windows-клиента, определяет тип каждого NTLM-сообщения, разбирает его основные поля и выводит полученные данные в терминал.
 
-На текущем этапе реализован сервис, который принимает штатную NTLM-аутентификацию от Windows-клиента, выводит NTLM-сообщения в терминал и подтверждает успешную доменную аутентификацию.
+Для разбора сообщений реализованы отдельные функции:
 
-Relay на другой сервис в этой версии еще не реализован.
+```text
+parse_type1(token)
+parse_type2(token)
+parse_type3(token)
+```
 
-## Суть NTLM Relay
+После завершения обмена сервис также подтверждает успешную доменную аутентификацию пользователя.
 
-NTLM использует схему challenge-response. В обычном случае клиент проходит последовательность:
+## Суть NTLM-аутентификации
+
+NTLM использует схему challenge-response. При аутентификации клиент и сервер проходят последовательность:
 
 1. NTLM Type 1 — NEGOTIATE.
 2. NTLM Type 2 — CHALLENGE.
 3. NTLM Type 3 — AUTHENTICATE.
 
-При NTLM Relay промежуточный сервис не обязан знать пароль пользователя. Он передает сообщения NTLM между клиентом и целевым сервисом. Цель итоговой части задания — реализовать такую передачу в изолированном учебном стенде.
+Сервис определяет тип сообщения с помощью функции:
 
-Текущая версия нужна для проверки первого этапа: сервис должен штатно принять настоящую NTLM-аутентификацию и показать обмен Type 1 → Type 2 → Type 3.
+```python
+get_ntlm_message_type(token)
+```
+
+После определения типа вызывается соответствующая функция разбора.
+
+Для Type 1 выводятся:
+
+```text
+Negotiation flags
+Domain name
+Workstation
+```
+
+Для Type 2:
+
+```text
+Target name
+Server challenge
+Negotiation flags
+Target info
+```
+
+Для Type 3:
+
+```text
+Username
+Domain
+Workstation
+LM response length
+NTLM response length
+NTLM response
+```
+
+Дополнительно для каждого сообщения выводятся его размер, Base64 и HEX-представление.
 
 ## Схема текущего этапа
 
@@ -29,8 +69,16 @@ NTLM использует схему challenge-response. В обычном сл�
                     authentication
                            |
 Windows client --Type 1--> Python service
+                           |
+                     parse_type1()
+                           |
 Windows client <--Type 2--- Python service
+                           |
+                     parse_type2()
+                           |
 Windows client --Type 3--> Python service
+                           |
+                     parse_type3()
                            |
                            v
                      authenticated
@@ -75,8 +123,8 @@ python -m pip install pyspnego
 На `ProtocolServer`:
 
 ```powershell
-cd C:\\NTLM-Lab
-python auth\_server.py
+cd C:\NTLM-Lab
+python auth_server.py
 ```
 
 Ожидаемый вывод:
@@ -118,7 +166,7 @@ TcpTestSucceeded : True
 Для запуска NTLM-аутентификации:
 
 ```powershell
-curl.exe --ntlm -u "PRACTICE\\labuser" http://192.168.56.20:8080/
+curl.exe --ntlm -u "PRACTICE\labuser" http://192.168.56.20:8080/
 ```
 
 Пароль вводится интерактивно после запроса `curl`.
@@ -128,47 +176,87 @@ curl.exe --ntlm -u "PRACTICE\\labuser" http://192.168.56.20:8080/
 Клиент:
 
 ```text
-Enter host password for user 'PRACTICE\\labuser':
+Enter host password for user 'PRACTICE\labuser':
 NTLM authentication successful
-User: PRACTICE\\labuser
+User: PRACTICE\labuser
 ```
 
 Сервер:
 
 ```text
-\[RECEIVED] NTLM MESSAGE
-Type   : 1 (NEGOTIATE)
+[RECEIVED] NTLM NEGOTIATE
+
+Message type      : 1
+Negotiation flags : 0xA2088207
+Domain name       : <not supplied>
+Workstation       : <not supplied>
+
 Length : 40 bytes
 Base64 : <данные Type 1>
 HEX    : <данные Type 1>
 
-\[SENT] NTLM MESSAGE
-Type   : 2 (CHALLENGE)
+
+[SENT] NTLM CHALLENGE
+
+Message type      : 2
+Target name       : PRACTICE
+Server challenge  : <challenge>
+Negotiation flags : <flags>
+
+Target info:
+  NbDomainName       : PRACTICE
+  NbComputerName     : PROTOCOLSRV
+  DnsDomainName      : practice.test
+  DnsComputerName    : PROTOCOLSRV.practice.test
+  DnsTreeName        : practice.test
+
 Length : <размер>
 Base64 : <данные Type 2>
 HEX    : <данные Type 2>
 
-\[RECEIVED] NTLM MESSAGE
-Type   : 3 (AUTHENTICATE)
+
+[RECEIVED] NTLM AUTHENTICATE
+
+Message type : 3
+Username     : labuser
+Domain       : PRACTICE
+Workstation  : CLIENTWIN11
+
+LM response:
+  length = 24
+  offset = 140
+
+NTLM response:
+  length = <размер>
+  offset = <смещение>
+  data   = <NTLM response>
+
 Length : <размер>
 Base64 : <данные Type 3>
 HEX    : <данные Type 3>
 
-\[+] AUTHENTICATED: PRACTICE\\labuser
+[+] AUTHENTICATED: PRACTICE\labuser
 ```
 
-Полные значения Base64/HEX в README не приводятся, но сервис выводит их в терминал во время работы.
+Полные значения Base64, HEX, Server Challenge и NTLM Response в README не приводятся, но сервис выводит их в терминал во время работы.
 
 ## Что делает код
 
-`auth\_server.py`:
+`auth_server.py`:
 
-* запускает HTTP-сервис на TCP 8080;
+* запускает HTTP-сервис на TCP-порту 8080;
 * предлагает клиенту NTLM-аутентификацию;
-* принимает NTLM Type 1;
-* формирует и отправляет NTLM Type 2;
-* принимает NTLM Type 3;
-* выводит тип, размер, Base64 и HEX каждого NTLM-сообщения;
-* завершает аутентификацию через Windows SSPI;
+* принимает NTLM Type 1 — NEGOTIATE;
+* определяет тип NTLM-сообщения;
+* разбирает Type 1 с помощью `parse_type1()`;
+* формирует и отправляет NTLM Type 2 — CHALLENGE;
+* разбирает Type 2 с помощью `parse_type2()`;
+* отдельно разбирает AV-поля `Target Info`;
+* принимает NTLM Type 3 — AUTHENTICATE;
+* разбирает Type 3 с помощью `parse_type3()`;
+* выводит имя пользователя, домен и рабочую станцию;
+* выводит длину LM Response;
+* выводит длину и содержимое NTLM Response;
+* выводит размер, Base64 и HEX каждого NTLM-сообщения;
+* завершает NTLM-аутентификацию через `pyspnego`;
 * выводит имя успешно аутентифицированного пользователя.
-
