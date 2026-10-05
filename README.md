@@ -2,7 +2,7 @@
 
 ## Статус
 
-В итоговой версии реализованы два сервиса:
+Реализованы два сервиса:
 
 * `target.py` — целевой HTTP-сервис с NTLM-аутентификацией и приватным ресурсом;
 * `relay.py` — HTTP relay, который передаёт NTLM-сообщения между клиентом и target-сервисом.
@@ -226,19 +226,19 @@ Private data: NTLM target lab resource
 
 ### Target
 
-!\[Target NTLM authentication](target.png)
+!\[Target NTLM authentication](screenshots/target.png)
 
 Дополнительный вывод target:
 
-!\[Target session](target2.png)
+!\[Target session](screenshots/target2.png)
 
 ### Relay
 
-!\[Relay successful session](relay.png)
+!\[Relay successful session](screenshots/relay.png)
 
 ### Client
 
-!\[Client request](client.png)
+!\[Client request](screenshots/client.png)
 
 ## Результат
 
