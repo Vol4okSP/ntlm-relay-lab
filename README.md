@@ -1,262 +1,260 @@
-# NTLM Authentication — разбор сообщений
+# NTLM Relay Lab
 
 ## Статус
 
-На данном этапе реализован сервис, который принимает штатную NTLM-аутентификацию от Windows-клиента, определяет тип каждого NTLM-сообщения, разбирает его основные поля и выводит полученные данные в терминал.
+В итоговой версии реализованы два сервиса:
 
-Для разбора сообщений реализованы отдельные функции:
+* `target.py` — целевой HTTP-сервис с NTLM-аутентификацией и приватным ресурсом;
+* `relay.py` — HTTP relay, который передаёт NTLM-сообщения между клиентом и target-сервисом.
 
-```text
-parse_type1(token)
-parse_type2(token)
-parse_type3(token)
-```
+Работа выполнялась в изолированном учебном стенде.
 
-После завершения обмена сервис также подтверждает успешную доменную аутентификацию пользователя.
+## Суть работы
 
-## Суть NTLM-аутентификации
+NTLM использует схему challenge-response и обменивается тремя основными сообщениями:
 
-NTLM использует схему challenge-response. При аутентификации клиент и сервер проходят последовательность:
+1. `NTLM NEGOTIATE` — клиент начинает аутентификацию.
+2. `NTLM CHALLENGE` — сервер отправляет challenge.
+3. `NTLM AUTHENTICATE` — клиент отправляет ответ на challenge.
 
-1. NTLM Type 1 — NEGOTIATE.
-2. NTLM Type 2 — CHALLENGE.
-3. NTLM Type 3 — AUTHENTICATE.
-
-Сервис определяет тип сообщения с помощью функции:
-
-```python
-get_ntlm_message_type(token)
-```
-
-После определения типа вызывается соответствующая функция разбора.
-
-Для Type 1 выводятся:
+В данной реализации relay находится между клиентом и target-сервисом и передаёт NTLM-токены без изменения:
 
 ```text
-Negotiation flags
-Domain name
-Workstation
+Client
+  |
+  | NTLM NEGOTIATE
+  v
+Relay
+  |
+  | NTLM NEGOTIATE
+  v
+Target
+  |
+  | NTLM CHALLENGE
+  v
+Relay
+  |
+  | NTLM CHALLENGE
+  v
+Client
+  |
+  | NTLM AUTHENTICATE
+  v
+Relay
+  |
+  | NTLM AUTHENTICATE
+  v
+Target
 ```
 
-Для Type 2:
+После успешного `NTLM AUTHENTICATE` relay не пересылает полученный от target успешный ответ клиенту. Вместо этого relay продолжает использовать уже аутентифицированное соединение с target и самостоятельно запрашивает приватный ресурс `/private` без нового заголовка `Authorization`.
+
+## Target-сервис
+
+`target.py` запускает HTTP-сервис на порту `8080`.
+
+Основные функции target:
+
+* принимает штатную NTLM-аутентификацию;
+* если запрос приходит без `Authorization`, отвечает `401 Unauthorized` с заголовком `WWW-Authenticate: NTLM`, инициируя NTLM-аутентификацию;
+* разбирает и выводит сообщения NTLM Type 1, Type 2 и Type 3;
+* выводит основные поля NTLM-сообщений;
+* после успешной аутентификации устанавливает состояние сессии `authenticated = True`;
+* сохраняет имя аутентифицированного пользователя в `principal`;
+* предоставляет приватный ресурс `/private` только для аутентифицированной сессии;
+* после успешной аутентификации позволяет получить `/private` в рамках той же сессии без нового заголовка `Authorization`.
+
+Пример ответа приватного ресурса:
 
 ```text
-Target name
-Server challenge
-Negotiation flags
-Target info
+PRIVATE RESOURCE
+Authentication: successful
+Principal: PRACTICE\\labuser
+Private data: NTLM target lab resource
 ```
 
-Для Type 3:
+## Relay-сервис
+
+`relay.py` по умолчанию запускает HTTP-сервис на порту `8090` и подключается к target-сервису на `127.0.0.1:8080`.
+
+Relay выполняет следующую последовательность:
+
+1. получает `NTLM NEGOTIATE` от клиента;
+2. передаёт его target-сервису;
+3. получает от target `NTLM CHALLENGE`;
+4. передаёт challenge клиенту;
+5. получает от клиента `NTLM AUTHENTICATE`;
+6. передаёт его target-сервису;
+7. если target отвечает `HTTP/1.1 200 OK`, считает аутентификацию принятой;
+8. успешный ответ после Type 3 клиенту не пересылается — relay использует аутентифицированную сессию самостоятельно;
+9. по тому же TCP-соединению relay запрашивает `/private` без нового `Authorization`;
+10. выводит полученные приватные данные в консоль.
+
+Для NTLM важно сохранение одного TCP-соединения с target на время всей последовательности аутентификации. Поэтому relay сохраняет соединение с target между Type 1, Type 2 и Type 3 и не создаёт новое соединение между отдельными этапами handshake.
+
+При обработке HTTP-запроса relay полностью вычитывает тело запроса в соответствии с `Content-Length` перед его передачей target-сервису. Это позволяет корректно обработать запрос целиком, а не только HTTP-заголовки.
+
+`relay.py` не использует `spnego`: он не выполняет NTLM-аутентификацию самостоятельно, а только передаёт NTLM-сообщения между клиентом и target и сохраняет соответствующее TCP-соединение.
+
+## Параметры relay
+
+Адрес и порт target можно задавать через параметры командной строки:
 
 ```text
-Username
-Domain
-Workstation
-LM response length
-NTLM response length
-NTLM response
+--target-host
+--target-port
 ```
 
-Дополнительно для каждого сообщения выводятся его размер, Base64 и HEX-представление.
-
-## Схема текущего этапа
+Также можно изменить адрес и порт, на которых слушает сам relay:
 
 ```text
-                    DOMAIN CONTROLLER
-                           ^
-                           |
-                    authentication
-                           |
-Windows client --Type 1--> Python service
-                           |
-                     parse_type1()
-                           |
-Windows client <--Type 2--- Python service
-                           |
-                     parse_type2()
-                           |
-Windows client --Type 3--> Python service
-                           |
-                     parse_type3()
-                           |
-                           v
-                     authenticated
+--listen-host
+--listen-port
 ```
 
-## Стенд
-
-Используются три виртуальные машины:
-
-```text
-DomainController
-Windows Server 2022
-192.168.56.10
-practice.test
-
-ProtocolServer
-Windows Server 2022
-192.168.56.20
-
-ClientWorkstation
-Windows 11
-192.168.56.30
-```
-
-Все машины находятся в изолированной сети `192.168.56.0/24`.
-
-## Требования
-
-На `ProtocolServer`:
-
-* Python 3.12;
-* библиотека `pyspnego`.
-
-Установка зависимости:
+Пример запуска с явным указанием параметров:
 
 ```powershell
-python -m pip install pyspnego
+python relay.py --listen-host 0.0.0.0 --listen-port 8090 --target-host 127.0.0.1 --target-port 8080
 ```
 
-## Запуск сервиса
+Если параметры не указаны, используются значения по умолчанию:
 
-На `ProtocolServer`:
+```text
+Relay:  0.0.0.0:8090
+Target: 127.0.0.1:8080
+```
+
+## Файлы
+
+```text
+target.py   — target-сервис с NTLM-аутентификацией и приватным ресурсом
+relay.py    — relay-сервис для передачи NTLM-сообщений между клиентом и target
+README.md   — описание практической работы
+```
+
+## Зависимости
+
+Для работы `target.py` используется библиотека `spnego` из пакета `pyspnego`.
+
+Установка:
 
 ```powershell
-cd C:\NTLM-Lab
-python auth_server.py
+pip install pyspnego
+```
+
+Для `relay.py` библиотека `spnego` не требуется.
+
+## Запуск
+
+### 1\. Запуск target
+
+На машине с target-сервисом:
+
+```powershell
+cd C:\\NTLM-Lab
+python target.py
 ```
 
 Ожидаемый вывод:
 
 ```text
-NTLM authentication server
+NTLM target service
 Listening on http://0.0.0.0:8080
+Private resource: /private
 Press Ctrl+C to stop
 ```
 
-Для доступа клиента к сервису на стенде используется TCP-порт 8080.
+### 2\. Запуск relay
 
-Пример правила Windows Firewall:
-
-```powershell
-New-NetFirewallRule `
-  -DisplayName "NTLM Lab TCP 8080" `
-  -Direction Inbound `
-  -Protocol TCP `
-  -LocalPort 8080 `
-  -RemoteAddress 192.168.56.0/24 `
-  -Action Allow
-```
-
-## Проверка с клиента
-
-На `ClientWorkstation`:
+В отдельном окне PowerShell:
 
 ```powershell
-Test-NetConnection 192.168.56.20 -Port 8080
+cd C:\\NTLM-Lab
+python relay.py
 ```
 
-При исправной связи:
+Ожидаемый вывод:
 
 ```text
-TcpTestSucceeded : True
+NTLM relay service
+Listening on http://0.0.0.0:8090
+Target: http://127.0.0.1:8080
+Press Ctrl+C to stop
 ```
 
-Для запуска NTLM-аутентификации:
+При необходимости target можно указать явно:
 
 ```powershell
-curl.exe --ntlm -u "PRACTICE\labuser" http://192.168.56.20:8080/
+python relay.py --target-host 127.0.0.1 --target-port 8080
 ```
 
-Пароль вводится интерактивно после запроса `curl`.
+### 3\. Проверка с клиента
 
-## Пример успешной сессии (так же представлен в папке "screenshots")
+В учебном стенде запрос выполнялся Windows-клиентом к relay-сервису:
 
-Клиент:
+```powershell
+curl.exe --ntlm --retry 0 -u "PRACTICE\\labuser" http://192.168.56.20:8090/private
+```
+
+После запуска команды вводится пароль тестовой учётной записи.
+
+Клиентское соединение может завершиться после отправки `NTLM AUTHENTICATE`, поскольку успешный ответ target после Type 3 relay клиенту не пересылает. Вместо этого relay самостоятельно продолжает работу с уже аутентифицированной сессией и получает приватный ресурс. Результат успешного доступа отображается в консоли relay.
+
+## Пример успешной сессии
+
+При успешном выполнении relay выводит последовательность, аналогичную следующей:
 
 ```text
-Enter host password for user 'PRACTICE\labuser':
-NTLM authentication successful
-User: PRACTICE\labuser
+CLIENT -> TARGET: NTLM NEGOTIATE
+TARGET -> CLIENT: NTLM CHALLENGE
+CLIENT -> TARGET: NTLM AUTHENTICATE
+\[+] NTLM AUTHENTICATE accepted by target
+\[+] Relay now owns the authenticated session
+\[+] Target response: HTTP/1.1 200 OK
+
+\[+] Private resource:
+PRIVATE RESOURCE
+Authentication: successful
+Principal: PRACTICE\\labuser
+Private data: NTLM target lab resource
 ```
 
-Сервер:
+На стороне target при этом отображается успешная аутентификация пользователя, состояние аутентифицированной сессии и обращение к приватному ресурсу от имени `principal`.
 
-```text
-[RECEIVED] NTLM NEGOTIATE
+## Скриншоты
 
-Message type      : 1
-Negotiation flags : 0xA2088207
-Domain name       : <not supplied>
-Workstation       : <not supplied>
+### Target
 
-Length : 40 bytes
-Base64 : <данные Type 1>
-HEX    : <данные Type 1>
+!\[Target NTLM authentication](target.png)
 
+Дополнительный вывод target:
 
-[SENT] NTLM CHALLENGE
+!\[Target session](target2.png)
 
-Message type      : 2
-Target name       : PRACTICE
-Server challenge  : <challenge>
-Negotiation flags : <flags>
+### Relay
 
-Target info:
-  NbDomainName       : PRACTICE
-  NbComputerName     : PROTOCOLSRV
-  DnsDomainName      : practice.test
-  DnsComputerName    : PROTOCOLSRV.practice.test
-  DnsTreeName        : practice.test
+!\[Relay successful session](relay.png)
 
-Length : <размер>
-Base64 : <данные Type 2>
-HEX    : <данные Type 2>
+### Client
 
+!\[Client request](client.png)
 
-[RECEIVED] NTLM AUTHENTICATE
+## Результат
 
-Message type : 3
-Username     : labuser
-Domain       : PRACTICE
-Workstation  : CLIENTWIN11
+Реализовано:
 
-LM response:
-  length = 24
-  offset = 140
+* распознавание NTLM Type 1 / Type 2 / Type 3;
+* target-сервис с реальной NTLM-аутентификацией;
+* ответ `401 Unauthorized` с `WWW-Authenticate: NTLM` для запуска NTLM-аутентификации;
+* хранение состояния аутентифицированной сессии;
+* сохранение `principal` после успешной аутентификации;
+* приватный ресурс, доступный в рамках аутентифицированной сессии без нового `Authorization`;
+* relay-передача `NEGOTIATE -> CHALLENGE -> AUTHENTICATE` между клиентом и target;
+* сохранение одного TCP-соединения с target на время NTLM handshake;
+* полное чтение тела HTTP-запроса перед передачей target;
+* настройка target IP/port и listen IP/port через параметры командной строки;
+* работа relay без `spnego`;
+* использование relay уже аутентифицированного соединения для получения приватных данных от имени клиента;
+* после успешного Type 3 ответ target не пересылается клиенту, а сессия используется самим relay.
 
-NTLM response:
-  length = <размер>
-  offset = <смещение>
-  data   = <NTLM response>
-
-Length : <размер>
-Base64 : <данные Type 3>
-HEX    : <данные Type 3>
-
-[+] AUTHENTICATED: PRACTICE\labuser
-```
-
-Полные значения Base64, HEX, Server Challenge и NTLM Response в README не приводятся, но сервис выводит их в терминал во время работы.
-
-## Что делает код
-
-`auth_server.py`:
-
-* запускает HTTP-сервис на TCP-порту 8080;
-* предлагает клиенту NTLM-аутентификацию;
-* принимает NTLM Type 1 — NEGOTIATE;
-* определяет тип NTLM-сообщения;
-* разбирает Type 1 с помощью `parse_type1()`;
-* формирует и отправляет NTLM Type 2 — CHALLENGE;
-* разбирает Type 2 с помощью `parse_type2()`;
-* отдельно разбирает AV-поля `Target Info`;
-* принимает NTLM Type 3 — AUTHENTICATE;
-* разбирает Type 3 с помощью `parse_type3()`;
-* выводит имя пользователя, домен и рабочую станцию;
-* выводит длину LM Response;
-* выводит длину и содержимое NTLM Response;
-* выводит размер, Base64 и HEX каждого NTLM-сообщения;
-* завершает NTLM-аутентификацию через `pyspnego`;
-* выводит имя успешно аутентифицированного пользователя.
