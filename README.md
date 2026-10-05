@@ -226,19 +226,19 @@ Private data: NTLM target lab resource
 
 ### Target
 
-!\[Target NTLM authentication](screenshots/target.png)
+![Target NTLM authentication](screenshots/target.png)
 
 Дополнительный вывод target:
 
-!\[Target session](screenshots/target2.png)
+![Target session](screenshots/target2.png)
 
 ### Relay
 
-!\[Relay successful session](screenshots/relay.png)
+![Relay successful session](screenshots/relay.png)
 
 ### Client
 
-!\[Client request](screenshots/client.png)
+![Client request](screenshots/client.png)
 
 ## Результат
 
